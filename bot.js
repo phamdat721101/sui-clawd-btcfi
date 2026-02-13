@@ -172,8 +172,25 @@ bot.on('message', async (msg) => {
 
     bot.sendChatAction(chatId, 'typing').catch(() => {});
     try {
-        const response = await GeminiService.chat(chatId, text);
-        safeSend(bot, chatId, response, { parse_mode: 'Markdown' });
+        const result = await GeminiService.chatWithImage(chatId, text);
+
+        if (result.imageBuffer) {
+            try {
+                await bot.sendPhoto(chatId, result.imageBuffer, {
+                    caption: result.text || undefined,
+                    parse_mode: result.text ? 'Markdown' : undefined,
+                });
+            } catch (photoErr) {
+                console.error("sendPhoto failed, falling back to text:", photoErr.message);
+                if (result.text) {
+                    safeSend(bot, chatId, result.text, { parse_mode: 'Markdown' });
+                } else {
+                    safeSend(bot, chatId, "I generated an image but couldn't send it. 🦞");
+                }
+            }
+        } else if (result.text) {
+            safeSend(bot, chatId, result.text, { parse_mode: 'Markdown' });
+        }
     } catch (err) {
         console.error("Chat Error:", err);
         safeSend(bot, chatId, "I'm offline briefly. 🦞");

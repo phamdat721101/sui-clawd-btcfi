@@ -20,7 +20,16 @@ You always sign off with a "🦞" emoji.`;
             systemInstruction: this.systemInstruction,
         });
 
+        this.imageModel = this.genAI.getGenerativeModel({
+            model: "gemini-2.0-flash-exp",
+            systemInstruction: this.systemInstruction,
+            generationConfig: {
+                responseModalities: ["Text", "Image"],
+            },
+        });
+
         this.sessions = new Map();
+        this.imageSessions = new Map();
 
         this._pruneTimer = setInterval(() => this._pruneSessions(), PRUNE_INTERVAL);
         this._pruneTimer.unref();
@@ -39,11 +48,29 @@ You always sign off with a "🦞" emoji.`;
         return session;
     }
 
+    _getImageSession(chatId) {
+        const key = String(chatId);
+        const existing = this.imageSessions.get(key);
+        if (existing) {
+            existing.lastUsed = Date.now();
+            return existing.session;
+        }
+
+        const session = this.imageModel.startChat();
+        this.imageSessions.set(key, { session, lastUsed: Date.now() });
+        return session;
+    }
+
     _pruneSessions() {
         const now = Date.now();
         for (const [key, entry] of this.sessions) {
             if (now - entry.lastUsed > SESSION_TTL) {
                 this.sessions.delete(key);
+            }
+        }
+        for (const [key, entry] of this.imageSessions) {
+            if (now - entry.lastUsed > SESSION_TTL) {
+                this.imageSessions.delete(key);
             }
         }
     }
@@ -111,6 +138,52 @@ You always sign off with a "🦞" emoji.`;
             console.error("GeminiService Chat Error:", error.message);
             this.sessions.delete(String(chatId));
             return "My neural connection is unstable. Please try again later. 🦞";
+        }
+    }
+
+    async chatWithImage(chatId, userMessage) {
+        if (!userMessage) return { text: "I didn't catch that. 🦞", imageBuffer: null };
+
+        try {
+            const session = this._getImageSession(chatId);
+            const result = await session.sendMessage(userMessage, {
+                signal: AbortSignal.timeout(GEMINI_TIMEOUT),
+            });
+
+            const response = result.response;
+            if (!response || !response.candidates || response.candidates.length === 0) {
+                return { text: "I couldn't generate a response. Please try again. 🦞", imageBuffer: null };
+            }
+
+            const candidate = response.candidates[0];
+            if (candidate.finishReason === 'SAFETY') {
+                return { text: "That request was blocked by safety filters. 🦞", imageBuffer: null };
+            }
+
+            let text = null;
+            let imageBuffer = null;
+
+            for (const part of candidate.content.parts) {
+                if (part.text) {
+                    text = (text || '') + part.text;
+                } else if (part.inlineData) {
+                    imageBuffer = Buffer.from(part.inlineData.data, 'base64');
+                }
+            }
+
+            if (text) text = this._truncate(text);
+
+            if (!text && !imageBuffer) {
+                return { text: "I couldn't generate a response. Please try again. 🦞", imageBuffer: null };
+            }
+
+            return { text, imageBuffer };
+        } catch (error) {
+            console.error("GeminiService ChatWithImage Error:", error.message);
+            this.imageSessions.delete(String(chatId));
+            // Fall back to text-only chat
+            const fallback = await this.chat(chatId, userMessage);
+            return { text: fallback, imageBuffer: null };
         }
     }
 
