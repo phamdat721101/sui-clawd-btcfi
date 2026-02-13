@@ -22,7 +22,7 @@ class SuiClient {
             id: 1,
             method,
             params,
-        });
+        }, { timeout: config.httpTimeout });
         if (data.error) {
             throw new Error(`Sui RPC ${method}: ${data.error.message}`);
         }
@@ -33,11 +33,10 @@ class SuiClient {
         return this._rpc('suix_getAllBalances', [address]);
     }
 
-    getBtcBalances(address) {
-        return this.getBalances(address).then(balances =>
-            balances.filter(b =>
-                BTC_COIN_TYPES.some(t => b.coinType.toLowerCase().includes(t))
-            )
+    async getBtcBalances(address) {
+        const balances = await this.getBalances(address);
+        return balances.filter(b =>
+            BTC_COIN_TYPES.some(t => b.coinType.toLowerCase().includes(t))
         );
     }
 

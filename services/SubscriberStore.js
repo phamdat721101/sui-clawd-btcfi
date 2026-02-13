@@ -1,4 +1,5 @@
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 const config = require('../config');
 
@@ -7,6 +8,8 @@ class SubscriberStore {
         this.filePath = path.resolve(config.dataDir, 'subscribers.json');
         this._ensureDir();
         this.data = this._load();
+        this._saving = false;
+        this._dirty = false;
     }
 
     _ensureDir() {
@@ -27,11 +30,24 @@ class SubscriberStore {
         return {};
     }
 
-    _save() {
+    async _save() {
+        if (this._saving) {
+            this._dirty = true;
+            return;
+        }
+        this._saving = true;
         try {
-            fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2));
+            const tmp = this.filePath + '.tmp';
+            await fsp.writeFile(tmp, JSON.stringify(this.data, null, 2));
+            await fsp.rename(tmp, this.filePath);
         } catch (err) {
             console.error('SubscriberStore save error:', err.message);
+        } finally {
+            this._saving = false;
+            if (this._dirty) {
+                this._dirty = false;
+                this._save();
+            }
         }
     }
 

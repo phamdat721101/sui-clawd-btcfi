@@ -1,10 +1,11 @@
 const axios = require('axios');
+const config = require('../config');
 const GeminiService = require('./GeminiService');
 
 class SuiScanner {
     async fetchPools() {
         console.log('Fetching data from DefiLlama...');
-        const response = await axios.get('https://yields.llama.fi/pools');
+        const response = await axios.get('https://yields.llama.fi/pools', { timeout: config.httpTimeout });
 
         if (!response.data || !response.data.data) {
             throw new Error('Invalid data format from DefiLlama');

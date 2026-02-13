@@ -6,6 +6,43 @@ const GeminiService = require('./services/GeminiService');
 const subscriberStore = require('./services/SubscriberStore');
 const WalletAuditor = require('./services/WalletAuditor');
 
+// --- Global Error Handlers ---
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled Rejection:', reason);
+});
+
+// --- Rate Limiter ---
+const RATE_LIMIT_MS = 2000;
+const rateLimitMap = new Map();
+
+function isRateLimited(chatId) {
+    const now = Date.now();
+    const last = rateLimitMap.get(chatId);
+    if (last && now - last < RATE_LIMIT_MS) return true;
+    rateLimitMap.set(chatId, now);
+    return false;
+}
+
+// --- Safe Send ---
+async function safeSend(bot, chatId, text, opts) {
+    try {
+        await bot.sendMessage(chatId, text, opts);
+    } catch (err) {
+        if (opts && opts.parse_mode) {
+            try {
+                await bot.sendMessage(chatId, text);
+            } catch (retryErr) {
+                console.error(`safeSend failed for ${chatId}:`, retryErr.message);
+            }
+        } else {
+            console.error(`safeSend failed for ${chatId}:`, err.message);
+        }
+    }
+}
+
 // --- Bot Setup ---
 const bot = new TelegramBot(config.telegramToken, { polling: true });
 const scheduler = new Scheduler(bot);
@@ -17,7 +54,7 @@ console.log('OpenClawd Sentinel initializing...');
 
 // /start
 bot.onText(/\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id,
+    safeSend(bot, msg.chat.id,
         `👋 *OpenClawd Sentinel Online*\n\nI monitor Sui BTCFi yields.\n\n` +
         `*Commands:*\n` +
         `/yield - Top BTC Yields 📊\n` +
@@ -34,13 +71,13 @@ bot.onText(/\/start/, (msg) => {
 // /yield
 bot.onText(/\/yield/, async (msg) => {
     const chatId = msg.chat.id;
-    bot.sendChatAction(chatId, 'typing');
+    bot.sendChatAction(chatId, 'typing').catch(() => {});
     try {
         const report = await SuiScanner.getLeaderboard();
-        bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
+        safeSend(bot, chatId, report, { parse_mode: 'Markdown' });
     } catch (err) {
         console.error("Yield Command Error:", err);
-        bot.sendMessage(chatId, "Failed to fetch yields. 🦞");
+        safeSend(bot, chatId, "Failed to fetch yields. 🦞");
     }
 });
 
@@ -48,14 +85,14 @@ bot.onText(/\/yield/, async (msg) => {
 bot.onText(/\/subscribe/, (msg) => {
     const chatId = msg.chat.id;
     subscriberStore.subscribe(chatId);
-    bot.sendMessage(chatId, "You're subscribed to daily yield reports at 09:00 AM. 🔔🦞", { parse_mode: 'Markdown' });
+    safeSend(bot, chatId, "You're subscribed to daily yield reports at 09:00 AM. 🔔🦞", { parse_mode: 'Markdown' });
 });
 
 // /unsubscribe
 bot.onText(/\/unsubscribe/, (msg) => {
     const chatId = msg.chat.id;
     subscriberStore.unsubscribe(chatId);
-    bot.sendMessage(chatId, "You've been unsubscribed from daily reports. 🔕🦞", { parse_mode: 'Markdown' });
+    safeSend(bot, chatId, "You've been unsubscribed from daily reports. 🔕🦞", { parse_mode: 'Markdown' });
 });
 
 // /wallet <address>
@@ -64,17 +101,17 @@ bot.onText(/\/wallet(?:\s+(.+))?/, (msg, match) => {
     const address = match[1] ? match[1].trim() : null;
 
     if (!address) {
-        bot.sendMessage(chatId, "Usage: `/wallet 0xYourSuiAddress`\n\nLink your Sui wallet for positions & audit features. 🦞", { parse_mode: 'Markdown' });
+        safeSend(bot, chatId, "Usage: `/wallet 0xYourSuiAddress`\n\nLink your Sui wallet for positions & audit features. 🦞", { parse_mode: 'Markdown' });
         return;
     }
 
     if (!/^0x[a-fA-F0-9]{64}$/.test(address)) {
-        bot.sendMessage(chatId, "Invalid Sui address. It should be `0x` followed by 64 hex characters. 🦞", { parse_mode: 'Markdown' });
+        safeSend(bot, chatId, "Invalid Sui address. It should be `0x` followed by 64 hex characters. 🦞", { parse_mode: 'Markdown' });
         return;
     }
 
     subscriberStore.setWallet(chatId, address);
-    bot.sendMessage(chatId, `Wallet linked: \`${address.slice(0, 8)}...${address.slice(-6)}\` 🔗🦞`, { parse_mode: 'Markdown' });
+    safeSend(bot, chatId, `Wallet linked: \`${address.slice(0, 8)}...${address.slice(-6)}\` 🔗🦞`, { parse_mode: 'Markdown' });
 });
 
 // /positions
@@ -83,17 +120,17 @@ bot.onText(/\/positions/, async (msg) => {
     const wallet = subscriberStore.getWallet(chatId);
 
     if (!wallet) {
-        bot.sendMessage(chatId, "No wallet linked. Use `/wallet 0xYourAddress` first. 🦞", { parse_mode: 'Markdown' });
+        safeSend(bot, chatId, "No wallet linked. Use `/wallet 0xYourAddress` first. 🦞", { parse_mode: 'Markdown' });
         return;
     }
 
-    bot.sendChatAction(chatId, 'typing');
+    bot.sendChatAction(chatId, 'typing').catch(() => {});
     try {
         const report = await WalletAuditor.getPositions(wallet);
-        bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
+        safeSend(bot, chatId, report, { parse_mode: 'Markdown' });
     } catch (err) {
         console.error("Positions Command Error:", err);
-        bot.sendMessage(chatId, "Failed to fetch positions. 🦞");
+        safeSend(bot, chatId, "Failed to fetch positions. 🦞");
     }
 });
 
@@ -103,23 +140,23 @@ bot.onText(/\/audit/, async (msg) => {
     const wallet = subscriberStore.getWallet(chatId);
 
     if (!wallet) {
-        bot.sendMessage(chatId, "No wallet linked. Use `/wallet 0xYourAddress` first. 🦞", { parse_mode: 'Markdown' });
+        safeSend(bot, chatId, "No wallet linked. Use `/wallet 0xYourAddress` first. 🦞", { parse_mode: 'Markdown' });
         return;
     }
 
-    bot.sendChatAction(chatId, 'typing');
+    bot.sendChatAction(chatId, 'typing').catch(() => {});
     try {
         const report = await WalletAuditor.audit(wallet);
-        bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
+        safeSend(bot, chatId, report, { parse_mode: 'Markdown' });
     } catch (err) {
         console.error("Audit Command Error:", err);
-        bot.sendMessage(chatId, "Failed to generate audit report. 🦞");
+        safeSend(bot, chatId, "Failed to generate audit report. 🦞");
     }
 });
 
 // /rebalance
 bot.onText(/\/rebalance/, (msg) => {
-    bot.sendMessage(msg.chat.id, "🦞 *Phase 2 Feature:* Automated PTB Rebalancing is coming soon!");
+    safeSend(bot, msg.chat.id, "🦞 *Phase 2 Feature:* Automated PTB Rebalancing is coming soon!", { parse_mode: 'Markdown' });
 });
 
 // --- General Message Handler (Chat) ---
@@ -129,16 +166,17 @@ bot.on('message', async (msg) => {
 
     if (!text) return;
     if (text.startsWith('/')) return;
+    if (isRateLimited(chatId)) return;
 
     console.log(`[Chat] User ${msg.from.username || msg.from.id}: ${text}`);
 
-    bot.sendChatAction(chatId, 'typing');
+    bot.sendChatAction(chatId, 'typing').catch(() => {});
     try {
-        const response = await GeminiService.chat(text);
-        bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
+        const response = await GeminiService.chat(chatId, text);
+        safeSend(bot, chatId, response, { parse_mode: 'Markdown' });
     } catch (err) {
         console.error("Chat Error:", err);
-        bot.sendMessage(chatId, "I'm offline briefly. 🦞");
+        safeSend(bot, chatId, "I'm offline briefly. 🦞");
     }
 });
 

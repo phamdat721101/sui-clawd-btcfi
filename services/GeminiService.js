@@ -1,47 +1,159 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require('../config');
 
+const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
+const PRUNE_INTERVAL = 10 * 60 * 1000; // 10 minutes
+const GEMINI_TIMEOUT = 30000; // 30 seconds
+const TELEGRAM_MAX_LENGTH = 4096;
+
 class GeminiService {
     constructor() {
         this.genAI = new GoogleGenerativeAI(config.geminiApiKey);
-        this.model = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-        this.identity = `
-            You are OpenClawd, an AI Sentinel for the Sui blockchain.
-            Your mission is to help users optimize their Bitcoin (BTC) yields on Sui.
-            You are helpful, concise, and technical but accessible.
-            You always sign off with a "🦞" emoji.
-        `;
+        this.systemInstruction = `You are OpenClawd, an AI Sentinel for the Sui blockchain.
+Your mission is to help users optimize their Bitcoin (BTC) yields on Sui.
+You are helpful, concise, and technical but accessible.
+You always sign off with a "🦞" emoji.`;
+
+        this.model = this.genAI.getGenerativeModel({
+            model: "gemini-2.0-flash",
+            systemInstruction: this.systemInstruction,
+        });
+
+        this.sessions = new Map();
+
+        this._pruneTimer = setInterval(() => this._pruneSessions(), PRUNE_INTERVAL);
+        this._pruneTimer.unref();
     }
 
-    async chat(userMessage) {
+    _getSession(chatId) {
+        const key = String(chatId);
+        const existing = this.sessions.get(key);
+        if (existing) {
+            existing.lastUsed = Date.now();
+            return existing.session;
+        }
+
+        const session = this.model.startChat();
+        this.sessions.set(key, { session, lastUsed: Date.now() });
+        return session;
+    }
+
+    _pruneSessions() {
+        const now = Date.now();
+        for (const [key, entry] of this.sessions) {
+            if (now - entry.lastUsed > SESSION_TTL) {
+                this.sessions.delete(key);
+            }
+        }
+    }
+
+    /**
+     * Safely extract text from a Gemini response, handling safety blocks
+     * and empty responses gracefully.
+     */
+    _safeExtractText(result) {
+        try {
+            const response = result.response;
+            if (!response) {
+                return null;
+            }
+
+            // Check for safety blocks
+            if (response.candidates && response.candidates.length > 0) {
+                const candidate = response.candidates[0];
+                if (candidate.finishReason === 'SAFETY') {
+                    console.warn('Gemini response blocked by safety filter');
+                    return null;
+                }
+            }
+
+            // Check promptFeedback for blocks
+            if (response.promptFeedback && response.promptFeedback.blockReason) {
+                console.warn(`Gemini prompt blocked: ${response.promptFeedback.blockReason}`);
+                return null;
+            }
+
+            const text = response.text();
+            if (!text || text.trim().length === 0) {
+                return null;
+            }
+
+            return text;
+        } catch (err) {
+            console.error('Failed to extract Gemini response text:', err.message);
+            return null;
+        }
+    }
+
+    /**
+     * Truncate text to fit Telegram's message length limit.
+     */
+    _truncate(text) {
+        if (text.length <= TELEGRAM_MAX_LENGTH) return text;
+        return text.slice(0, TELEGRAM_MAX_LENGTH - 30) + '\n\n... (truncated) 🦞';
+    }
+
+    async chat(chatId, userMessage) {
         if (!userMessage) return "I didn't catch that. 🦞";
 
         try {
-            const prompt = `${this.identity}\n\nUser: ${userMessage}\nSentinel:`;
-            const result = await this.model.generateContent(prompt);
-            return result.response.text();
+            const session = this._getSession(chatId);
+            const result = await session.sendMessage(userMessage, {
+                signal: AbortSignal.timeout(GEMINI_TIMEOUT),
+            });
+            const text = this._safeExtractText(result);
+            if (!text) {
+                return "I couldn't generate a response. Please try again. 🦞";
+            }
+            return this._truncate(text);
         } catch (error) {
             console.error("GeminiService Chat Error:", error.message);
+            this.sessions.delete(String(chatId));
             return "My neural connection is unstable. Please try again later. 🦞";
         }
     }
 
     async analyzeYields(poolsData) {
         try {
-            const prompt = `
-                ${this.identity}
+            const now = new Date().toLocaleDateString('en-GB', {
+                timeZone: 'Asia/Bangkok',
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+            });
 
-                ANALYZE the following Sui BTCFi yield data (JSON).
-                IDENTIFY the top 3 best opportunities (APY + TVL).
-                FORMAT as a clean Telegram message. Use emojis.
+            const prompt = `You are OpenClawd Sentinel. Generate a "9 AM Mission Brief" for Sui BTCFi yields.
 
-                DATA:
-                ${JSON.stringify(poolsData.slice(0, 10))}
-            `;
+DATE: ${now} (GMT+7)
 
-            const result = await this.model.generateContent(prompt);
-            return result.response.text();
+FORMAT the report EXACTLY like this:
+- Header: "🦞 OPENCLAWD MISSION BRIEF — [date]"
+- Section: "🎯 HIGH-YIELD MISSIONS" with the top 3 opportunities
+- For EACH mission include:
+  • Pool name and protocol
+  • APY (percentage)
+  • TVL (formatted in $M or $K)
+  • Risk Score (1-5 scale): 1=Very Safe, 2=Safe, 3=Moderate, 4=Risky, 5=Very Risky
+    Base this on TVL size (higher=safer), APY sustainability (extremely high APY=riskier), and protocol maturity
+  • A simple ASCII strategy flow, e.g.: Wallet → Swap WBTC → Supply to Pool → Earn APY
+- Section: "📡 MARKET SENTIMENT" — 2-3 sentence summary of the overall Sui BTC yield landscape
+- Sign off with 🦞
+
+Keep it clean for Telegram Markdown. Use bold (*text*) for emphasis.
+
+POOL DATA (JSON):
+${JSON.stringify(poolsData.slice(0, 10))}`;
+
+            const result = await this.model.generateContent(prompt, {
+                signal: AbortSignal.timeout(GEMINI_TIMEOUT),
+            });
+            const text = this._safeExtractText(result);
+            if (!text) {
+                return "Failed to generate the Mission Brief. 🦞";
+            }
+            return this._truncate(text);
         } catch (error) {
             console.error("GeminiService Analysis Error:", error.message);
             return "I failed to analyze the yield data. 🦞";
@@ -50,26 +162,36 @@ class GeminiService {
 
     async auditWallet(balances, topPools) {
         try {
-            const prompt = `
-                ${this.identity}
+            const prompt = `You are OpenClawd Sentinel. Generate a PERSONALIZED YIELD AUDIT for a Sui wallet.
 
-                A user wants a PERSONALIZED YIELD AUDIT.
+USER'S CURRENT BTC HOLDINGS ON SUI:
+${JSON.stringify(balances)}
 
-                Their current BTC holdings on Sui:
-                ${JSON.stringify(balances)}
+TOP AVAILABLE BTC YIELD POOLS ON SUI:
+${JSON.stringify(topPools.slice(0, 10))}
 
-                Top available BTC yield pools on Sui right now:
-                ${JSON.stringify(topPools.slice(0, 10))}
+FORMAT the audit as follows:
+- Header: "🔍 OPENCLAWD WALLET AUDIT"
+- Section: "💰 CURRENT HOLDINGS" — summarize what the user holds
+- Section: "🎯 RECOMMENDED ACTIONS" — for each recommendation include:
+  • The target pool/protocol
+  • Expected APY
+  • Risk Score (1-5): 1=Very Safe, 2=Safe, 3=Moderate, 4=Risky, 5=Very Risky
+  • Strategy flow: e.g. Wallet → Swap → Supply → Earn
+  • Why this is a good move (1 sentence)
+- Section: "⚠️ RISKS" — brief risk summary
+- Sign off with 🦞
 
-                COMPARE their holdings to the best available yields.
-                IDENTIFY opportunities they are missing.
-                SUGGEST specific actions to improve their yield.
-                FORMAT as a clean Telegram message with emojis.
-                Keep it actionable and concise.
-            `;
+Keep it clean for Telegram Markdown. Be actionable and concise.`;
 
-            const result = await this.model.generateContent(prompt);
-            return result.response.text();
+            const result = await this.model.generateContent(prompt, {
+                signal: AbortSignal.timeout(GEMINI_TIMEOUT),
+            });
+            const text = this._safeExtractText(result);
+            if (!text) {
+                return "Failed to generate your wallet audit. 🦞";
+            }
+            return this._truncate(text);
         } catch (error) {
             console.error("GeminiService Audit Error:", error.message);
             return "I failed to generate your wallet audit. 🦞";

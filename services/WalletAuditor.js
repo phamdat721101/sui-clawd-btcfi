@@ -4,12 +4,17 @@ const GeminiService = require('./GeminiService');
 
 class WalletAuditor {
     async audit(address) {
-        const [btcBalances, topPools] = await Promise.all([
-            SuiClient.getBtcBalances(address),
-            SuiScanner.fetchPools(),
-        ]);
+        try {
+            const [btcBalances, topPools] = await Promise.all([
+                SuiClient.getBtcBalances(address),
+                SuiScanner.fetchPools(),
+            ]);
 
-        return GeminiService.auditWallet(btcBalances, topPools);
+            return GeminiService.auditWallet(btcBalances, topPools);
+        } catch (err) {
+            console.error('WalletAuditor.audit error:', err.message);
+            return "⚠️ Could not complete your audit — data sources unreachable. Try again shortly. 🦞";
+        }
     }
 
     async getPositions(address) {
@@ -20,8 +25,10 @@ class WalletAuditor {
         }
 
         const lines = balances.map(b => {
-            const amount = (BigInt(b.totalBalance) / BigInt(10 ** 8)).toString();
-            const remainder = (BigInt(b.totalBalance) % BigInt(10 ** 8)).toString().padStart(8, '0').slice(0, 4);
+            const raw = b.totalBalance != null ? String(b.totalBalance) : '0';
+            const total = BigInt(raw);
+            const amount = (total / BigInt(10 ** 8)).toString();
+            const remainder = (total % BigInt(10 ** 8)).toString().padStart(8, '0').slice(0, 4);
             const typeParts = b.coinType.split('::');
             const symbol = typeParts[typeParts.length - 1].toUpperCase();
             return `  - *${symbol}*: ${amount}.${remainder}`;
