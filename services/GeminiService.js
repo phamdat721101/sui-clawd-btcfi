@@ -4,20 +4,52 @@ const config = require('../config');
 const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
 const PRUNE_INTERVAL = 10 * 60 * 1000; // 10 minutes
 const GEMINI_TIMEOUT = 30000; // 30 seconds
+const FUNCTION_CALL_TIMEOUT = 60000; // 60 seconds for function calling loops
+const MAX_FUNCTION_CALLS = 3;
 const TELEGRAM_MAX_LENGTH = 4096;
 
 class GeminiService {
     constructor() {
         this.genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
+        this.toolDeclarations = [
+            {
+                name: "fetch_yield_pools",
+                description: "Fetch current real-time BTC yield pools on Sui from DefiLlama. Returns pool name, protocol, APY, TVL, and more.",
+                parameters: { type: "OBJECT", properties: {}, required: [] },
+            },
+            {
+                name: "get_wallet_btc_positions",
+                description: "Get a Sui wallet's current BTC token balances from on-chain data.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        address: { type: "STRING", description: "The Sui wallet address (0x...)" },
+                    },
+                    required: ["address"],
+                },
+            },
+        ];
+
+        const today = new Date().toLocaleDateString('en-GB', {
+            timeZone: 'Asia/Bangkok',
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+        });
+
         this.systemInstruction = `You are OpenClawd, an AI Sentinel for the Sui blockchain.
 Your mission is to help users optimize their Bitcoin (BTC) yields on Sui.
 You are helpful, concise, and technical but accessible.
-You always sign off with a "🦞" emoji.`;
+You always sign off with a "🦞" emoji.
+Today's date: ${today} (GMT+7).
+You have access to live tools: you can fetch real-time DeFi yield pool data from DefiLlama and read on-chain Sui wallet BTC positions. When a user asks about yields, pools, or wallet positions, use your tools to get live data — do not say you cannot access real-time data.`;
 
         this.model = this.genAI.getGenerativeModel({
             model: "gemini-2.0-flash",
             systemInstruction: this.systemInstruction,
+            tools: [{ functionDeclarations: this.toolDeclarations }],
         });
 
         this.imageModel = this.genAI.getGenerativeModel({
@@ -121,14 +153,73 @@ You always sign off with a "🦞" emoji.`;
         return text.slice(0, TELEGRAM_MAX_LENGTH - 30) + '\n\n... (truncated) 🦞';
     }
 
+    async _executeFunctionCall(name, args) {
+        switch (name) {
+            case "fetch_yield_pools": {
+                const suiScanner = require('./SuiScanner');
+                const pools = await suiScanner.fetchPools();
+                return { pools: pools.slice(0, 15) };
+            }
+            case "get_wallet_btc_positions": {
+                const suiClient = require('./SuiClient');
+                const balances = await suiClient.getBtcBalances(args.address);
+                return { address: args.address, balances };
+            }
+            default:
+                return { error: `Unknown function: ${name}` };
+        }
+    }
+
+    async _handleFunctionCallingLoop(session, result) {
+        for (let i = 0; i < MAX_FUNCTION_CALLS; i++) {
+            const response = result.response;
+            if (!response || !response.candidates || response.candidates.length === 0) {
+                return result;
+            }
+
+            const candidate = response.candidates[0];
+            if (!candidate.content || !candidate.content.parts) {
+                return result;
+            }
+
+            const functionCallPart = candidate.content.parts.find(p => p.functionCall);
+            if (!functionCallPart) {
+                return result;
+            }
+
+            const { name, args } = functionCallPart.functionCall;
+            console.log(`Gemini function call: ${name}(${JSON.stringify(args)})`);
+
+            let fnResult;
+            try {
+                fnResult = await this._executeFunctionCall(name, args || {});
+            } catch (err) {
+                console.error(`Function call ${name} failed:`, err.message);
+                fnResult = { error: `Failed to execute ${name}: ${err.message}` };
+            }
+
+            result = await session.sendMessage([{
+                functionResponse: {
+                    name,
+                    response: fnResult,
+                },
+            }], {
+                signal: AbortSignal.timeout(FUNCTION_CALL_TIMEOUT),
+            });
+        }
+
+        return result;
+    }
+
     async chat(chatId, userMessage) {
         if (!userMessage) return "I didn't catch that. 🦞";
 
         try {
             const session = this._getSession(chatId);
-            const result = await session.sendMessage(userMessage, {
+            let result = await session.sendMessage(userMessage, {
                 signal: AbortSignal.timeout(GEMINI_TIMEOUT),
             });
+            result = await this._handleFunctionCallingLoop(session, result);
             const text = this._safeExtractText(result);
             if (!text) {
                 return "I couldn't generate a response. Please try again. 🦞";
@@ -146,9 +237,10 @@ You always sign off with a "🦞" emoji.`;
 
         try {
             const session = this._getImageSession(chatId);
-            const result = await session.sendMessage(userMessage, {
+            let result = await session.sendMessage(userMessage, {
                 signal: AbortSignal.timeout(GEMINI_TIMEOUT),
             });
+            result = await this._handleFunctionCallingLoop(session, result);
 
             const response = result.response;
             if (!response || !response.candidates || response.candidates.length === 0) {
