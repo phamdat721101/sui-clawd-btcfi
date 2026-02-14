@@ -4,14 +4,8 @@ import { useState } from 'react';
 import { createClient } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { VIBES, RISK_LABELS } from '@/lib/types';
 import type { VibeMode } from '@/lib/types';
-
-const VIBES: { mode: VibeMode; label: string; desc: string; emoji: string }[] = [
-  { mode: 'professional', label: 'Professional', desc: 'Clear, data-driven analysis', emoji: '📊' },
-  { mode: 'degen', label: 'Degen', desc: 'Ape-first, ask questions later', emoji: '🦍' },
-  { mode: 'stoic', label: 'Stoic', desc: 'Calm wisdom, capital preservation', emoji: '🏛️' },
-  { mode: 'pirate', label: 'Pirate', desc: 'Sail the seas for BTC treasure', emoji: '🏴‍☠️' },
-];
 
 export default function OnboardingPage() {
   const [name, setName] = useState('');
@@ -51,7 +45,7 @@ export default function OnboardingPage() {
     }
   }
 
-  const riskLabels = ['Very Conservative', 'Conservative', 'Moderate', 'Aggressive', 'Very Aggressive'];
+  const riskLabels = RISK_LABELS;
 
   return (
     <div className="flex min-h-screen items-center justify-center p-4">

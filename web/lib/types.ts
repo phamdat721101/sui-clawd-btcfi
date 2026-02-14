@@ -1,5 +1,21 @@
 export type VibeMode = 'professional' | 'degen' | 'stoic' | 'pirate';
 
+export const VIBES: { mode: VibeMode; label: string; desc: string; emoji: string }[] = [
+  { mode: 'professional', label: 'Professional', desc: 'Clear, data-driven analysis', emoji: '📊' },
+  { mode: 'degen', label: 'Degen', desc: 'Ape-first, ask questions later', emoji: '🦍' },
+  { mode: 'stoic', label: 'Stoic', desc: 'Calm wisdom, capital preservation', emoji: '🏛️' },
+  { mode: 'pirate', label: 'Pirate', desc: 'Sail the seas for BTC treasure', emoji: '🏴‍☠️' },
+];
+
+export const RISK_LABELS = ['Very Conservative', 'Conservative', 'Moderate', 'Aggressive', 'Very Aggressive'];
+
+export interface BtcBalance {
+  coinType: string;
+  totalBalance: string;
+  symbol: string;
+  formatted: string;
+}
+
 export interface Agent {
   id: string;
   user_id: string;

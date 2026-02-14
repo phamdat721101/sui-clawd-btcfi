@@ -1,12 +1,15 @@
+import type { Pool } from '@/lib/types';
+
 interface StrategyCardProps {
-  pool: Record<string, unknown>;
+  pool: Pool | Record<string, unknown>;
 }
 
 export function StrategyCard({ pool }: StrategyCardProps) {
-  const symbol = String(pool.symbol || 'Unknown');
-  const project = String(pool.project || 'Unknown');
-  const apy = typeof pool.apy === 'number' ? pool.apy.toFixed(2) : '—';
-  const tvl = typeof pool.tvlUsd === 'number' ? formatTvl(pool.tvlUsd) : '—';
+  const p = pool as Record<string, unknown>;
+  const symbol = String(p.symbol || 'Unknown');
+  const project = String(p.project || 'Unknown');
+  const apy = typeof p.apy === 'number' ? p.apy.toFixed(2) : '—';
+  const tvl = typeof p.tvlUsd === 'number' ? formatTvl(p.tvlUsd) : '—';
 
   return (
     <div className="rounded-lg border border-border bg-background p-3 text-xs">
