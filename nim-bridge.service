@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenClaw Supabase Bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/nim-bot
+ExecStart=/usr/bin/node bridge.js
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/ubuntu/nim-bot/.env
+
+[Install]
+WantedBy=default.target
